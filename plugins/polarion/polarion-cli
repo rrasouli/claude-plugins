@@ -522,11 +522,11 @@ def import_results(args):
                     elif "block" in status_str:
                         result = "blocked"
 
-                # Build verdict field for failed tests with Prow URL
-                verdict = None
+                # Build comment with Prow URL for failed tests
+                comment = None
                 if result == "failed" and tc.get("prow_url"):
                     prow_url = tc["prow_url"]
-                    verdict = prow_url
+                    comment = f"Failure: {prow_url}"
 
                 # Update result
                 update_result = test_run_mgr.update_test_result(
@@ -534,7 +534,7 @@ def import_results(args):
                     test_case_id=tc["id"],
                     result=result,
                     project_id=project_id,
-                    verdict=verdict
+                    comment=comment
                 )
 
                 if update_result.get("status") == "success":
