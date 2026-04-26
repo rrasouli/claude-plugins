@@ -401,10 +401,29 @@ def import_results(args):
             print(json.dumps({"status": "failed", "error": "Only Excel (.xlsx) files are supported"}, indent=2), file=sys.stderr)
             return 1
 
+        # Read Variants sheet first if it exists
+        variants_by_platform = {}
+        if 'Variants' in sheets:
+            variants_sheet = wb['Variants']
+            for row in range(2, variants_sheet.max_row + 1):
+                platform = variants_sheet.cell(row, 1).value
+                variant = variants_sheet.cell(row, 2).value
+                job_url = variants_sheet.cell(row, 3).value
+                build_date = variants_sheet.cell(row, 4).value
+
+                if platform and variant:
+                    if platform not in variants_by_platform:
+                        variants_by_platform[platform] = []
+                    variants_by_platform[platform].append({
+                        "variant": variant,
+                        "job_url": job_url,
+                        "build_date": build_date
+                    })
+
         results = []
 
         for sheet_name in sheets:
-            if sheet_name.lower() == 'summary':
+            if sheet_name.lower() in ['summary', 'variants']:
                 continue
 
             sheet = wb[sheet_name]
@@ -415,6 +434,7 @@ def import_results(args):
                 test_id = sheet.cell(row, 1).value
                 title = sheet.cell(row, 2).value
                 status = sheet.cell(row, 3).value
+                prow_url = sheet.cell(row, 4).value  # Column D contains Prow URL
 
                 if test_id and title:
                     # Normalize test_id
@@ -430,7 +450,8 @@ def import_results(args):
                     test_cases.append({
                         "id": test_id,
                         "title": title,
-                        "status": status
+                        "status": status,
+                        "prow_url": prow_url
                     })
 
             if not test_cases:
@@ -456,6 +477,35 @@ def import_results(args):
             test_run_id = create_result.get("test_run_id")
             print(f"\nCreated test run for {sheet_name}: {test_run_id}", file=sys.stderr)
 
+            # Update test run description with variant links (if variants exist for this platform)
+            if sheet_name in variants_by_platform:
+                variants = variants_by_platform[sheet_name]
+                description_lines = ["Test Run Variants:", ""]
+
+                for variant_info in variants:
+                    variant = variant_info.get("variant", "")
+                    job_url = variant_info.get("job_url", "")
+                    build_date = variant_info.get("build_date", "")
+
+                    if job_url:
+                        description_lines.append(f"- {variant}: {job_url} (Build Date: {build_date})")
+                    else:
+                        description_lines.append(f"- {variant}: (Build Date: {build_date})")
+
+                description = "\n".join(description_lines)
+
+                # Update test run description
+                desc_result = test_run_mgr.update_test_run_description(
+                    test_run_id=test_run_id,
+                    description=description,
+                    project_id=project_id
+                )
+
+                if desc_result.get("status") == "success":
+                    print(f"Updated description with {len(variants)} variant(s)", file=sys.stderr)
+                else:
+                    print(f"Warning: Failed to update description: {desc_result.get('error')}", file=sys.stderr)
+
             # Update test results
             passed = 0
             failed = 0
@@ -472,12 +522,19 @@ def import_results(args):
                     elif "block" in status_str:
                         result = "blocked"
 
+                # Build verdict field for failed tests with Prow URL
+                verdict = None
+                if result == "failed" and tc.get("prow_url"):
+                    prow_url = tc["prow_url"]
+                    verdict = prow_url
+
                 # Update result
                 update_result = test_run_mgr.update_test_result(
                     test_run_id=test_run_id,
                     test_case_id=tc["id"],
                     result=result,
-                    project_id=project_id
+                    project_id=project_id,
+                    verdict=verdict
                 )
 
                 if update_result.get("status") == "success":
